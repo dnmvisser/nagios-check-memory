@@ -22,7 +22,7 @@
 
 use strict;
 use warnings;
-use vars qw($PROGNAME $VERSION $FREECMD $UNIT);
+use vars qw($PROGNAME $VERSION $FREECMD $VMWARE_TOOLBOX_CMD $UNIT);
 
 sub load_module {
     my @names = @_;
@@ -50,6 +50,7 @@ BEGIN {
 $PROGNAME = "check_memory";
 $VERSION = '1.0.1';
 $FREECMD = '/usr/bin/free';
+$VMWARE_TOOLBOX_CMD = '/usr/bin/vmware-toolbox-cmd';
 $UNIT = 'M';
 
 my $np = $plugin_module->new(
@@ -124,8 +125,26 @@ alarm $np->opts->timeout;
 warn("Running: '$FREECMD -b'\n") if ($verbose);
 open(RESULT, "$FREECMD -b |")
   or $np->nagios_exit('CRITICAL', "Could not run $FREECMD");
-
 warn("Output from $FREECMD:\n") if ($verbose > 1);
+
+
+# Optionally check ballooned memory
+my ($ballooned);
+if(-e $VMWARE_TOOLBOX_CMD && -f _ && -r _ && -X _) {
+  warn("Running: '$VMWARE_TOOLBOX_CMD stat balloon'\n") if ($verbose);
+  open(RESULT2, "$VMWARE_TOOLBOX_CMD stat balloon |")
+    or $np->nagios_exit('CRITICAL', "Could not run $VMWARE_TOOLBOX_CMD");
+  warn("Output from $VMWARE_TOOLBOX_CMD:\n") if ($verbose > 1);
+  while (<RESULT2>) {
+    warn("  $_") if ($verbose > 1);
+    if ( /^(\d+)\s+MB$/) {
+      $ballooned = $1;
+    }
+  }
+}
+
+
+
 my $new_format = 0;
 my ($total, $used, $free);
 while (<RESULT>) {
@@ -137,7 +156,10 @@ while (<RESULT>) {
   if ($new_format and /^Mem:\s+(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+(\d+)$/) {
     $total = $1;
     $free = $2; # available column
-    $used = $total - $free; # used is everything which is not available
+    if(defined($ballooned)) {
+      $free = $free + ($ballooned * 1024 * 1024);
+    }
+    $used = $total - $free; # used is everything which is not available.
   } elsif (m#^\-/\+\ buffers/cache:\s*(\d+)\s+(\d+)#) {
     $used = $1;
     $free = $2;
@@ -146,6 +168,7 @@ while (<RESULT>) {
 }
 
 close(RESULT);
+close(RESULT2);
 alarm(0);
 
 $np->nagios_exit('CRITICAL', "Unable to interpret $FREECMD output") if (!defined($free));
